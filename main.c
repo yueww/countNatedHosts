@@ -350,12 +350,14 @@ main_loop(void *arg)
 						int edgeAndAppFlag,edge,appFlag;
 						edgeAndAppFlag=getConnHashKey(ipv4Hdr,&key);
 						if(edgeAndAppFlag==UNKNOWN||edgeAndAppFlag==NOTTCP){
+                            rte_pktmbuf_free(m);
 							continue;
 						}	
 						appFlag=(edgeAndAppFlag&0x0000ffff);
 						edge=(edgeAndAppFlag>>16);
 						int updateRes=updateConnStatInfo(ipv4Hdr,&key,edge,appFlag);
 						if(updateRes!=0){
+                            rte_pktmbuf_free(m);
 							if(updateRes==-2){
 								force_quit=1;
 								break;
@@ -363,9 +365,8 @@ main_loop(void *arg)
 								continue;
 							}
 						}
-					}else{
-						rte_pktmbuf_free(m);
 					}
+					rte_pktmbuf_free(m);
 				}
 			}
 		}
