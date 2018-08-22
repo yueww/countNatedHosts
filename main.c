@@ -79,15 +79,21 @@ static lookup_struct_t *connectionHashTable;
 uint32_t *appsIpSegPool[APPNUM];
 
 mIpv4 ip1={
-    .ipByteMode={14,17,43,34},
+    .ipByteMode={14,17,43,0},
 };
 mIpv4 ip2={
-    .ipByteMode={113,96,233,139},
+    .ipByteMode={14,17,43,255},
 };
 mIpv4 ip3={
-    .ipByteMode={140,206,78,0},
+    .ipByteMode={113,96,233,0},
 };
 mIpv4 ip4={
+    .ipByteMode={113,96,233,255},
+};
+mIpv4 ip5={
+    .ipByteMode={140,206,78,0},
+};
+mIpv4 ip6={
     .ipByteMode={140,206,78,255},
 };
 static volatile bool force_quit;
@@ -120,11 +126,11 @@ static void addAppIpSegment(void){
     uint32_t *app1IpSegment=(uint32_t *)malloc(4*sizeof(uint32_t));
     uint32_t *app2IpSegment=(uint32_t *)malloc(2*sizeof(uint32_t));
     app1IpSegment[0]=convertIpFromByteToUint(ip1);
-    app1IpSegment[1]=convertIpFromByteToUint(ip1);
-    app1IpSegment[2]=convertIpFromByteToUint(ip2);
-    app1IpSegment[3]=convertIpFromByteToUint(ip2);
-    app2IpSegment[0]=convertIpFromByteToUint(ip3);
-    app2IpSegment[1]=convertIpFromByteToUint(ip4);
+    app1IpSegment[1]=convertIpFromByteToUint(ip2);
+    app1IpSegment[2]=convertIpFromByteToUint(ip3);
+    app1IpSegment[3]=convertIpFromByteToUint(ip4);
+    app2IpSegment[0]=convertIpFromByteToUint(ip5);
+    app2IpSegment[1]=convertIpFromByteToUint(ip6);
     printf("%u %u %u %u\n",app1IpSegment[0],app1IpSegment[2],app2IpSegment[0],app2IpSegment[1]);
     appsIpSegPool[0]=app1IpSegment;
     appsIpSegPool[1]=app2IpSegment;
@@ -219,7 +225,7 @@ static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key,int edge
         printf("invalid parameters in hash lookup!\n");
         return -1;
     }else if(index==-ENOENT){
-        if((tcpHdr->tcp_flags&TCP_FIN_FLAG)==0){
+        if(((tcpHdr->tcp_flags&TCP_FIN_FLAG)==0)||(tcpHdr->tcp_flags&TCP_RST_FLAG)){
             index=rte_hash_add_key(connectionHashTable,(const void *)key);
             if(index==-EINVAL){
                 printf("invalid parameters in hash add!\n");
