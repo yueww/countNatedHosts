@@ -52,10 +52,12 @@
 
 typedef struct rte_hash lookup_struct_t;
 
-typedef struct ipv4_2tuple{
+typedef struct ipv4_4tuple{
     uint32_t cli_ip;
+    uint32_t ser_ip;
     uint16_t cli_port;
-}ipv4_2tuple;
+    uint16_t ser_port;
+}ipv4_4tuple;
 
 typedef struct mIpv4{
     uint8_t ipByteMode[4];
@@ -67,6 +69,7 @@ typedef struct connect_statis_info{
     uint64_t totalBytes;
     uint8_t osFlag;
     uint8_t appFlag; //1 represent wechat,2 represent 360
+    ipv4_4tuple conn;
     struct connect_statis_info *next;
 }connect_statis_info,*connect_statis_info_p;
 
@@ -155,7 +158,7 @@ static int ipIsBelongToThisApp(uint32_t *appIpSegment,struct ipv4_hdr *ipv4Hdr,u
     return -1;
 }
 
-static int getConnHashKey(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key){
+static int getConnHashKey(struct ipv4_hdr *ipv4Hdr,ipv4_4tuple *key){
     struct tcp_hdr *tcpHdr;
     if(ipv4Hdr->next_proto_id==IPPROTO_TCP){
         tcpHdr=(struct tcp_hdr *)((unsigned char *)ipv4Hdr+sizeof(struct ipv4_hdr));
@@ -167,26 +170,34 @@ static int getConnHashKey(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key){
     edge=ipIsBelongToThisApp(appsIpSegPool[ISWECHAT],ipv4Hdr,ISWECHAT);
     if(edge==0){
         key->cli_ip=rte_be_to_cpu_32(ipv4Hdr->src_addr);
+        key->ser_ip=rte_be_to_cpu_32(ipv4Hdr->dst_addr);
         key->cli_port=rte_be_to_cpu_16(tcpHdr->src_port);
+        key->ser_port=rte_be_to_cpu_16(tcpHdr->dst_port);
         ret=((edge<<16)|ISWECHAT);
         return ret;
     }
     if(edge==1){
         key->cli_ip=rte_be_to_cpu_32(ipv4Hdr->dst_addr);
+        key->ser_ip=rte_be_to_cpu_32(ipv4Hdr->src_addr);
         key->cli_port=rte_be_to_cpu_16(tcpHdr->dst_port);
+        key->ser_port=rte_be_to_cpu_16(tcpHdr->src_port);
         ret=((edge<<16)|ISWECHAT);
         return ret;
     }
     edge=ipIsBelongToThisApp(appsIpSegPool[IS360],ipv4Hdr,IS360);
     if(edge==0){
         key->cli_ip=rte_be_to_cpu_32(ipv4Hdr->src_addr);
+        key->ser_ip=rte_be_to_cpu_32(ipv4Hdr->dst_addr);
         key->cli_port=rte_be_to_cpu_16(tcpHdr->src_port);
+        key->ser_port=rte_be_to_cpu_16(tcpHdr->dst_port);
         ret=((edge<<16)|IS360);
         return ret;
     }
     if(edge==1){
         key->cli_ip=rte_be_to_cpu_32(ipv4Hdr->dst_addr);
+        key->ser_ip=rte_be_to_cpu_32(ipv4Hdr->src_addr);
         key->cli_port=rte_be_to_cpu_16(tcpHdr->dst_port);
+        key->ser_port=rte_be_to_cpu_16(tcpHdr->src_port);
         ret=((edge<<16)|IS360);
         return ret;
     }
@@ -197,9 +208,9 @@ static int getConnHashKey(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key){
 static void setup_hash(int socketid)
 {
 	struct rte_hash_parameters con_hash_params = {
-        	.name = NULL,
+        .name = NULL,
 		.entries = CON_HASH_ENTRIES,
-		.key_len = sizeof(struct ipv4_2tuple),
+		.key_len = sizeof(struct ipv4_4tuple),
 		.hash_func = DEFAULT_HASH_FUNC,
 		.hash_func_init_val = 0,
 	};
@@ -218,14 +229,21 @@ static void setup_hash(int socketid)
 	printf("setup hashtable ok!\n");
 }
 
-static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key,int edge,int appFlag){
+static void print_ip_addr(struct ipv4_hdr *ipv4Hdr){
+	uint8_t *sip,*dip;
+	sip=(uint8_t *)(&(ipv4Hdr->src_addr));
+	dip=(uint8_t *)(&(ipv4Hdr->dst_addr));
+	printf("%u.%u.%u.%u->%u.%u.%u.%u\n",sip[0],sip[1],sip[2],sip[3],dip[0],dip[1],dip[2],dip[3]);
+}
+
+static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_4tuple *key,int edge,int appFlag){
     struct tcp_hdr *tcpHdr=(struct tcp_hdr *)((unsigned char *)ipv4Hdr+sizeof(struct ipv4_hdr));
     int index=rte_hash_lookup(connectionHashTable,(const void *)key);
     if(index==-EINVAL){
         printf("invalid parameters in hash lookup!\n");
         return -1;
     }else if(index==-ENOENT){
-        if(((tcpHdr->tcp_flags&TCP_FIN_FLAG)==0)||(tcpHdr->tcp_flags&TCP_RST_FLAG)){
+        if(((tcpHdr->tcp_flags&TCP_FIN_FLAG)==0)&&((tcpHdr->tcp_flags&TCP_RST_FLAG)==0)){
             index=rte_hash_add_key(connectionHashTable,(const void *)key);
             if(index==-EINVAL){
                 printf("invalid parameters in hash add!\n");
@@ -238,11 +256,28 @@ static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key,int edge
                     printf("there is no more space to store connection statistics info!\n");
                     return -2;
                 }else{
+                    int tmpIndex=index;
+                    connect_statis_info_p oldPointer=connStatInfoTable[tmpIndex];
+                    while(oldPointer){
+                        ipv4_4tuple connKey=oldPointer->conn;
+                        tmpIndex=rte_hash_lookup(connectionHashTable,(const void *)(&connKey));
+                        if(tmpIndex==-EINVAL){
+                            printf("invalid parameters in hash lookup!\n");
+                            return -1;
+                        }else if(index==-ENOENT){
+                            printf("detect invalid nodes!\n");
+                            return -4;
+                        }
+                        connect_statis_info_p tmpPointer=connStatInfoTable[tmpIndex];
+                        connStatInfoTable[tmpIndex]=oldPointer;
+                        oldPointer=tmpPointer;
+                    }
                     connStatInfoTable[index]=unusedHead;
                     unusedHead=unusedHead->next;
                     connStatInfoTable[index]->next=NULL;
                     connStatInfoTable[index]->firstTime=connStatInfoTable[index]->lastTime=rte_rdtsc();
                     connStatInfoTable[index]->totalBytes+=ipv4Hdr->total_length;
+                    memcpy(&(connStatInfoTable[index]->conn),key,sizeof(ipv4_4tuple));
                     if(appFlag==0){
                         connStatInfoTable[index]->appFlag=1;
                     }else if(appFlag==1){
@@ -263,9 +298,12 @@ static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key,int edge
             return 0;
         }
     }else{
-        if((tcpHdr->tcp_flags&TCP_FIN_FLAG)==0){
+        if(((tcpHdr->tcp_flags&TCP_FIN_FLAG)==0)&&((tcpHdr->tcp_flags&TCP_RST_FLAG)==0)){
             connStatInfoTable[index]->lastTime=rte_rdtsc();
             connStatInfoTable[index]->totalBytes+=ipv4Hdr->total_length;
+            if((connStatInfoTable[index]->conn).cli_ip==0){
+                memcpy(&(connStatInfoTable[index]->conn),key,sizeof(ipv4_4tuple));
+            }
             if(connStatInfoTable[index]->appFlag==0){
                 if(appFlag==0){
                     connStatInfoTable[index]->appFlag=1;
@@ -300,6 +338,7 @@ static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_2tuple *key,int edge
                 pConnStatInfoEntry->lastTime=0;
                 pConnStatInfoEntry->totalBytes=0;
                 pConnStatInfoEntry->osFlag=0;
+                memset(&(pConnStatInfoEntry->conn),0,sizeof(ipv4_4tuple));
                 unusedTail->next=pConnStatInfoEntry;
                 unusedTail=unusedTail->next;
             }
@@ -327,8 +366,8 @@ main_loop(void *arg)
 	uint16_t i;
 	uint16_t j;
 
-    	unsigned socketid=rte_socket_id();
-    	setup_hash(socketid);
+    unsigned socketid=rte_socket_id();
+    setup_hash(socketid);
 
 	while (!force_quit) {
 		for (i = 0; i < nr_queues; i++) {
@@ -346,7 +385,7 @@ main_loop(void *arg)
 						rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
 							sizeof(struct ether_hdr));
                                               
-						ipv4_2tuple key;
+						ipv4_4tuple key;
 						int edgeAndAppFlag,edge,appFlag;
 						edgeAndAppFlag=getConnHashKey(ipv4Hdr,&key);
 						if(edgeAndAppFlag==UNKNOWN||edgeAndAppFlag==NOTTCP){
@@ -355,6 +394,7 @@ main_loop(void *arg)
 						}	
 						appFlag=(edgeAndAppFlag&0x0000ffff);
 						edge=(edgeAndAppFlag>>16);
+
 						int updateRes=updateConnStatInfo(ipv4Hdr,&key,edge,appFlag);
 						if(updateRes!=0){
                             rte_pktmbuf_free(m);
@@ -374,7 +414,7 @@ main_loop(void *arg)
 
 	rte_eth_dev_stop(port_id);
 	rte_eth_dev_close(port_id);
-    	return 0;
+    return 0;
 }
 
 static void my_rte_delay_s(uint32_t s){
