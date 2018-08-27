@@ -276,7 +276,7 @@ static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_4tuple *key,int edge
                     unusedHead=unusedHead->next;
                     connStatInfoTable[index]->next=NULL;
                     connStatInfoTable[index]->firstTime=connStatInfoTable[index]->lastTime=rte_rdtsc();
-                    connStatInfoTable[index]->totalBytes+=ipv4Hdr->total_length;
+                    connStatInfoTable[index]->totalBytes+=rte_be_to_cpu_16(ipv4Hdr->total_length);
                     memcpy(&(connStatInfoTable[index]->conn),key,sizeof(ipv4_4tuple));
                     if(appFlag==0){
                         connStatInfoTable[index]->appFlag=1;
@@ -300,7 +300,7 @@ static int updateConnStatInfo(struct ipv4_hdr *ipv4Hdr,ipv4_4tuple *key,int edge
     }else{
         if(((tcpHdr->tcp_flags&TCP_FIN_FLAG)==0)&&((tcpHdr->tcp_flags&TCP_RST_FLAG)==0)){
             connStatInfoTable[index]->lastTime=rte_rdtsc();
-            connStatInfoTable[index]->totalBytes+=ipv4Hdr->total_length;
+            connStatInfoTable[index]->totalBytes+=rte_be_to_cpu_16(ipv4Hdr->total_length);
             if((connStatInfoTable[index]->conn).cli_ip==0){
                 memcpy(&(connStatInfoTable[index]->conn),key,sizeof(ipv4_4tuple));
             }
